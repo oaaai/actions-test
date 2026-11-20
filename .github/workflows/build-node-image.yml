@@ -43,15 +43,16 @@ jobs:
       - name: Install host packages (official baremetal prereqs)
         run: |
           sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            jq make unzip curl wget git gettext sshpass \
-            qemu-kvm qemu-utils libvirt-daemon-system libvirt-clients virtinst \
-            cpu-checker libguestfs-tools libosinfo-bin ovmf genisoimage \
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            -o Dpkg::Options::="--force-confdef" \
+            -o Dpkg::Options::="--force-confold" \
+            jq make unzip curl wget git gettext sshpass openssh-client \
+            qemu-kvm qemu-utils cpu-checker ovmf genisoimage \
             cloud-image-utils python3-venv python3-pip rsync
-          sudo snap install yq || {
+          if ! timeout 90 sudo snap install yq; then
             curl -fsSL https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -o /tmp/yq
             sudo install -m 0755 /tmp/yq /usr/local/bin/yq
-          }
+          fi
           mkdir -p ~/.ssh
           echo 'HostKeyAlgorithms +ssh-rsa' >> ~/.ssh/config
           echo 'PubkeyAcceptedKeyTypes +ssh-rsa' >> ~/.ssh/config
