@@ -1,0 +1,89 @@
+name: build-node-image
+
+on:
+  push:
+    branches: [ci/image-build]
+    paths:
+      - .github/workflows/build-node-image.yml
+  workflow_dispatch:
+    inputs:
+      bundle:
+        description: EKS-A bundle number (131 = v0.27.0 / image-builder v0.7.0)
+        default: "131"
+      channel:
+        description: EKS-D channel
+        default: "1-36"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    env:
+      CHANNEL: ${{ github.event.inputs.channel || '1-36' }}
+      PACKER_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GIT_TERMINAL_PROMPT: "0"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo chmod 666 /dev/kvm || true
+          sudo usermod -aG kvm "$USER" || true
+          ls -l /dev/kvm
+          df -h /
+
+      - name: Install host packages (official baremetal prereqs)
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            jq make unzip curl wget git gettext sshpass \
+            qemu-kvm qemu-utils libvirt-daemon-system libvirt-clients virtinst \
+            cpu-checker libguestfs-tools libosinfo-bin ovmf genisoimage \
+            cloud-image-utils python3-venv python3-pip rsync
+          sudo snap install yq || {
+            curl -fsSL https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -o /tmp/yq
+            sudo install -m 0755 /tmp/yq /usr/local/bin/yq
+          }
+          mkdir -p ~/.ssh
+          echo 'HostKeyAlgorithms +ssh-rsa' >> ~/.ssh/config
+          echo 'PubkeyAcceptedKeyTypes +ssh-rsa' >> ~/.ssh/config
+          chmod 600 ~/.ssh/config
+          sudo kvm-ok
+          yq --version
+
+      - name: Install ansible-core 2.15.13
+        run: |
+          python3 -m venv "$HOME/ansible-venv"
+          "$HOME/ansible-venv/bin/pip" install --disable-pip-version-check ansible-core==2.15.13
+          echo "$HOME/ansible-venv/bin" >> "$GITHUB_PATH"
+          "$HOME/ansible-venv/bin/ansible" --version | head -3
+
+      - name: Install image-builder
+        env:
+          IMAGE_BUILDER_URL: https://anywhere-assets.eks.amazonaws.com/releases/bundles/${{ github.event.inputs.bundle || '131' }}/artifacts/image-builder/v0.7.0/image-builder-linux-amd64.tar.gz
+        run: |
+          curl -fsSL "$IMAGE_BUILDER_URL" -o /tmp/image-builder.tar.gz
+          mkdir -p /tmp/image-builder
+          tar xzf /tmp/image-builder.tar.gz -C /tmp/image-builder
+          sudo install -m 0755 /tmp/image-builder/image-builder /usr/local/bin/image-builder
+          image-builder version
+
+      - name: Build node image
+        run: |
+          image-builder build --os ubuntu --os-version 24.04 \
+            --hypervisor baremetal --release-channel "$CHANNEL"
+
+      - name: Upload image
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu-2404-kube-${{ env.CHANNEL }}
+          path: ubuntu-2404-kube-*.gz
+          retention-days: 14
