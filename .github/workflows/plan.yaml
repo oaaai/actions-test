@@ -1,0 +1,54 @@
+name: eksa-plan
+
+on:
+  push:
+    branches: [ci/image-build]
+    paths:
+      - .github/workflows/plan.yml
+      - actions/plan.sh
+  workflow_dispatch:
+    inputs:
+      bundle:
+        description: EKS-A bundle number
+        default: "131"
+      channel:
+        description: EKS-D channel
+        default: "1-36"
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      BUNDLE: ${{ github.event.inputs.bundle || '131' }}
+      CHANNEL: ${{ github.event.inputs.channel || '1-36' }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install standard tools
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            jq curl skopeo
+          if ! command -v yq >/dev/null 2>&1; then
+            curl -fsSL https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -o /tmp/yq
+            sudo install -m 0755 /tmp/yq /usr/local/bin/yq
+          fi
+          yq --version
+          skopeo --version
+          jq --version
+
+      - name: Generate plan with standard tools
+        run: |
+          bash actions/plan.sh "$BUNDLE" "$CHANNEL" plan
+
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: eksa-plan-${{ env.BUNDLE }}-${{ env.CHANNEL }}
+          path: plan
+          retention-days: 14

@@ -1,10 +1,10 @@
-name: build-node-image
+name: eksa-os
 
 on:
   push:
     branches: [ci/image-build]
     paths:
-      - .github/workflows/build-node-image.yml
+      - .github/workflows/image.yml
   workflow_dispatch:
     inputs:
       bundle:
@@ -18,16 +18,17 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  image:
     runs-on: ubuntu-22.04
     timeout-minutes: 360
     env:
+      BUNDLE: ${{ github.event.inputs.bundle || '131' }}
       CHANNEL: ${{ github.event.inputs.channel || '1-36' }}
       PACKER_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GIT_TERMINAL_PROMPT: "0"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Enable KVM
         run: |
@@ -40,7 +41,7 @@ jobs:
           ls -l /dev/kvm
           df -h /
 
-      - name: Install host packages (official baremetal prereqs)
+      - name: Install host packages
         run: |
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -69,7 +70,7 @@ jobs:
 
       - name: Install image-builder
         env:
-          IMAGE_BUILDER_URL: https://anywhere-assets.eks.amazonaws.com/releases/bundles/${{ github.event.inputs.bundle || '131' }}/artifacts/image-builder/v0.7.0/image-builder-linux-amd64.tar.gz
+          IMAGE_BUILDER_URL: https://anywhere-assets.eks.amazonaws.com/releases/bundles/${{ env.BUNDLE }}/artifacts/image-builder/v0.7.0/image-builder-linux-amd64.tar.gz
         run: |
           curl -fsSL "$IMAGE_BUILDER_URL" -o /tmp/image-builder.tar.gz
           mkdir -p /tmp/image-builder
@@ -82,9 +83,25 @@ jobs:
           image-builder build --os ubuntu --os-version 24.04 \
             --hypervisor baremetal --release-channel "$CHANNEL"
 
-      - name: Upload image
-        uses: actions/upload-artifact@v4
+      - name: Inspect image and write manifest
+        run: |
+          GZ=$(ls ubuntu-*-kube-*.gz | head -1)
+          gzip -t "$GZ"
+          SHA=$(sha256sum "$GZ" | awk '{print $1}')
+          SIZE=$(stat -c %s "$GZ")
+          python3 - "$GZ" "$SHA" "$SIZE" <<'PY'
+          import json, sys
+          json.dump({"file": sys.argv[1], "sha256": sys.argv[2], "bytes": int(sys.argv[3])},
+                    open("os-manifest.json", "w"), indent=2)
+          PY
+          ls -lh "$GZ"
+          cat os-manifest.json
+
+      - name: Upload OS artifact
+        uses: actions/upload-artifact@v7
         with:
-          name: ubuntu-2404-kube-${{ env.CHANNEL }}
-          path: ubuntu-2404-kube-*.gz
+          name: eksa-os-${{ env.BUNDLE }}-${{ env.CHANNEL }}
+          path: |
+            ubuntu-*-kube-*.gz
+            os-manifest.json
           retention-days: 14
